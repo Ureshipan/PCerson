@@ -1,0 +1,7 @@
+*
+!.gitignore
+!logs/
+!cache/
+!runtime/
+!memory/
+

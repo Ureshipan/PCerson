@@ -1,0 +1,4 @@
+required:
+  - timeouts
+  - cache
+

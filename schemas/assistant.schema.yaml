@@ -1,0 +1,6 @@
+required:
+  - platform
+  - activation
+  - capabilities
+  - responses
+

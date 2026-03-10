@@ -1,0 +1,17 @@
+{
+  "quiet_hours": {
+    "enabled": false,
+    "start": "23:00",
+    "end": "08:00"
+  },
+  "initiative": {
+    "autonomous_enabled": false,
+    "level": "low"
+  },
+  "reaction_policy": {
+    "preferred_channels": [
+      "desktop_notification",
+      "log_note"
+    ]
+  }
+}

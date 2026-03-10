@@ -1,0 +1,26 @@
+{
+  "microphones": [],
+  "cameras": [],
+  "printers": [],
+  "desktop_aliases": {
+    "notepad": {
+      "type": "program",
+      "target": "notepad.exe"
+    },
+    "explorer": {
+      "type": "program",
+      "target": "explorer.exe"
+    }
+  },
+  "allowed_paths": [
+    "%USERPROFILE%\\\\Desktop",
+    "%USERPROFILE%\\\\Documents"
+  ],
+  "recent": {
+    "enabled": true,
+    "max_items": 25
+  },
+  "home_assistant": {
+    "entities": []
+  }
+}

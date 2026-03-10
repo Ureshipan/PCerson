@@ -1,0 +1,15 @@
+{
+  "llm": {
+    "backend": "mock",
+    "model": "local-placeholder",
+    "endpoint": "http://127.0.0.1:11434"
+  },
+  "stt": {
+    "enabled": false,
+    "backend": "none"
+  },
+  "vision": {
+    "enabled": false,
+    "backend": "none"
+  }
+}

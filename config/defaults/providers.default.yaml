@@ -1,0 +1,17 @@
+{
+  "weather": {
+    "enabled": false,
+    "providers": []
+  },
+  "news": {
+    "enabled": false,
+    "providers": []
+  },
+  "timeouts": {
+    "connect_seconds": 5,
+    "read_seconds": 10
+  },
+  "cache": {
+    "ttl_seconds": 900
+  }
+}

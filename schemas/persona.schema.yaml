@@ -1,0 +1,6 @@
+required:
+  - name
+  - style
+  - tone
+  - system_prompt
+

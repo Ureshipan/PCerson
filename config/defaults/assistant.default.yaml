@@ -1,0 +1,34 @@
+{
+  "platform": "windows",
+  "logging": {
+    "level": "INFO",
+    "file": "state/logs/assistant.log"
+  },
+  "activation": {
+    "hotkey": {
+      "enabled": true,
+      "combo": "ctrl+alt+space"
+    },
+    "wake_word": {
+      "enabled": false,
+      "phrase": "person"
+    },
+    "manual": {
+      "enabled": true
+    }
+  },
+  "capabilities": {
+    "desktop": true,
+    "camera": false,
+    "microphone": false,
+    "printer": false,
+    "home_assistant": false
+  },
+  "responses": {
+    "quiet_mode": false,
+    "desktop_notification": true,
+    "overlay": false,
+    "log_note": true,
+    "printer_fallback": "popup"
+  }
+}
