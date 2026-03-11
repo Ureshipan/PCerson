@@ -10,6 +10,14 @@
     "explorer": {
       "type": "program",
       "target": "explorer.exe"
+    },
+    "browser": {
+      "type": "url",
+      "target": "https://www.google.com"
+    },
+    "steam": {
+      "type": "url",
+      "target": "steam://open/main"
     }
   },
   "allowed_paths": [
@@ -19,6 +27,25 @@
   "recent": {
     "enabled": true,
     "max_items": 25
+  },
+  "registered_commands": {
+    "open_downloads": {
+      "type": "program",
+      "target": "explorer.exe",
+      "args": [
+        "%USERPROFILE%\\\\Downloads"
+      ]
+    },
+    "open_steam": {
+      "type": "url",
+      "target": "steam://open/main",
+      "args": []
+    },
+    "open_browser": {
+      "type": "url",
+      "target": "https://www.google.com",
+      "args": []
+    }
   },
   "home_assistant": {
     "entities": []

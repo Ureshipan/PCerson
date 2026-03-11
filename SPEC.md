@@ -6,9 +6,10 @@
 * local-first конфиг и state;
 * базовая долговременная память на SQLite;
 * безопасный desktop action whitelist;
+* hotkey activation adapter (Windows);
 * text-first ответы;
+* локальный LLM adapter (`ollama` + fallback);
 * bootstrap и doctor;
 * опциональные модули оставлены расширяемыми.
 
-Следующий инкремент: hotkey listener, host bridge transport, LLM backend и richer policy routing.
-
+Следующий инкремент: wake-word/STT, camera/printer backends, home-assistant bridge transport.

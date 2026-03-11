@@ -26,16 +26,17 @@ class DesktopCapability(CapabilityAdapter):
 
     def capabilities(self) -> list[str]:
         return [
+            "open_shortcut",
             "open_program",
             "open_file",
             "open_folder",
             "open_url",
             "open_alias",
             "open_recent",
+            "run_registered",
         ]
 
     def execute(self, action: str, payload: dict[str, Any]) -> dict[str, Any]:
         if not self.enabled:
             return {"ok": False, "message": "Desktop capability disabled"}
         return self.host_bridge.execute(action, payload)
-

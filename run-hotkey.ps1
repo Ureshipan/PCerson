@@ -1,6 +1,4 @@
 $ErrorActionPreference = "Stop"
-[Console]::InputEncoding = [System.Text.Encoding]::UTF8
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $repoRoot = $PSScriptRoot
 
 Push-Location $repoRoot
@@ -10,7 +8,7 @@ try {
     throw "start-model failed with exit code $LASTEXITCODE"
   }
   $env:PYTHONPATH = "$repoRoot\\assistant-core\\src;$repoRoot\\host-agent\\src"
-  python -m app.main @args
+  python -m main --hotkey @args
 }
 finally {
   Pop-Location

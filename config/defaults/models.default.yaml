@@ -1,8 +1,16 @@
 {
   "llm": {
-    "backend": "mock",
-    "model": "local-placeholder",
+    "backend": "ollama",
+    "model": "llama3.2:3b",
     "endpoint": "http://127.0.0.1:11434"
+  },
+  "memory": {
+    "enabled": true,
+    "backend": "qdrant",
+    "endpoint": "http://127.0.0.1:6333",
+    "collection": "assistant_memory",
+    "embedding_model": "nomic-embed-text",
+    "top_k": 6
   },
   "stt": {
     "enabled": false,

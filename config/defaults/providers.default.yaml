@@ -1,11 +1,27 @@
 {
   "weather": {
-    "enabled": false,
-    "providers": []
+    "enabled": true,
+    "providers": [
+      "open-meteo"
+    ],
+    "default_location": "",
+    "language": "ru",
+    "geocode_endpoint": "https://geocoding-api.open-meteo.com/v1/search",
+    "forecast_endpoint": "https://api.open-meteo.com/v1/forecast"
   },
   "news": {
-    "enabled": false,
-    "providers": []
+    "enabled": true,
+    "providers": [
+      "google-news-rss"
+    ],
+    "language": "ru",
+    "region": "RU",
+    "default_topics": [
+      "технологии",
+      "игры"
+    ],
+    "top_rss_url": "https://news.google.com/rss",
+    "search_rss_url": "https://news.google.com/rss/search"
   },
   "timeouts": {
     "connect_seconds": 5,

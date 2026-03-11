@@ -1,10 +1,21 @@
 services:
   ollama:
     image: ollama/ollama:latest
+    gpus: all
+    environment:
+      OLLAMA_KEEP_ALIVE: 24h
     ports:
       - "11434:11434"
     volumes:
       - ../state/runtime/ollama:/root/.ollama
+    restart: unless-stopped
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"
+    volumes:
+      - ../state/runtime/qdrant:/qdrant/storage
     restart: unless-stopped
 
   mqtt:
@@ -14,4 +25,3 @@ services:
     volumes:
       - ../state/runtime/mqtt:/mosquitto/data
     restart: unless-stopped
-

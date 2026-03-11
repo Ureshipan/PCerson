@@ -62,7 +62,7 @@ class ConfigLoader:
     def _read_yaml(self, path: Path) -> dict[str, Any]:
         if not path.exists():
             return {}
-        raw = path.read_text(encoding="utf-8").strip()
+        raw = path.read_text(encoding="utf-8-sig").strip()
         if not raw:
             return {}
         if yaml is not None:

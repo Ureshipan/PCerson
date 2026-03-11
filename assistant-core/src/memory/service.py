@@ -4,6 +4,7 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+import json
 
 
 SCHEMA = """
@@ -64,3 +65,51 @@ class MemoryService:
             for row in rows
         ]
 
+    def recent_by_kinds(self, kinds: list[str], limit: int = 10) -> list[dict[str, Any]]:
+        if not kinds:
+            return []
+        placeholders = ", ".join(["?"] * len(kinds))
+        query = (
+            "SELECT kind, content, metadata, created_at FROM memory_entries "
+            f"WHERE kind IN ({placeholders}) ORDER BY id DESC LIMIT ?"
+        )
+        params: list[Any] = [*kinds, limit]
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [
+            {
+                "kind": row[0],
+                "content": row[1],
+                "metadata": row[2],
+                "created_at": row[3],
+            }
+            for row in rows
+        ]
+
+    def recent_dialogue(self, limit: int = 8) -> list[dict[str, Any]]:
+        rows = self.recent_by_kinds(["user_message", "assistant_message"], limit=limit)
+        dialogue = []
+        for row in reversed(rows):
+            role = "user" if row["kind"] == "user_message" else "assistant"
+            dialogue.append(
+                {
+                    "role": role,
+                    "text": row["content"],
+                    "created_at": row["created_at"],
+                }
+            )
+        return dialogue
+
+    def add_structured(self, kind: str, content: str, metadata: dict[str, Any] | None = None) -> None:
+        self.add(MemoryEntry(kind=kind, content=content, metadata=json.dumps(metadata or {}, ensure_ascii=False)))
+
+    def contains(self, kind: str, content: str) -> bool:
+        normalized = content.strip().lower()
+        if not normalized:
+            return False
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM memory_entries WHERE kind = ? AND lower(trim(content)) = ? LIMIT 1",
+                (kind, normalized),
+            ).fetchone()
+        return row is not None

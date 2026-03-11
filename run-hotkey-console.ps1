@@ -10,7 +10,7 @@ try {
     throw "start-model failed with exit code $LASTEXITCODE"
   }
   $env:PYTHONPATH = "$repoRoot\\assistant-core\\src;$repoRoot\\host-agent\\src"
-  python -m app.main @args
+  python -m main --hotkey-console @args
 }
 finally {
   Pop-Location

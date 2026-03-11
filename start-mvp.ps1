@@ -9,6 +9,10 @@ try {
   if ($LASTEXITCODE -ne 0) {
     throw "start-model failed with exit code $LASTEXITCODE"
   }
+  powershell -ExecutionPolicy Bypass -File ".\\scripts\\doctor.ps1" | Out-Host
+  if ($LASTEXITCODE -ne 0) {
+    throw "Doctor failed with exit code $LASTEXITCODE"
+  }
   $env:PYTHONPATH = "$repoRoot\\assistant-core\\src;$repoRoot\\host-agent\\src"
   python -m app.main @args
 }
