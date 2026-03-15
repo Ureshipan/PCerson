@@ -13,8 +13,13 @@
     "top_k": 6
   },
   "stt": {
-    "enabled": false,
-    "backend": "none"
+    "enabled": true,
+    "backend": "vosk_local",
+    "language": "ru-RU",
+    "timeout_seconds": 8,
+    "model_name": "vosk-model-small-ru-0.22",
+    "model_path": "state/runtime/vosk/models/vosk-model-small-ru-0.22",
+    "download_url": "https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip"
   },
   "vision": {
     "enabled": false,

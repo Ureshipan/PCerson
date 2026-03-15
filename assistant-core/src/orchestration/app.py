@@ -20,6 +20,15 @@ from orchestration.router import CommandRouter
 from persona.profile import PersonaProfile
 from policies.response_policy import ResponsePolicy
 
+QUERY_STOPWORDS = {
+    "открой", "открыть", "запусти", "запустить", "включи", "включить",
+    "покажи", "показать", "найди", "найти", "хочу", "хочется", "можешь",
+    "могешь", "можешь", "мне", "могу", "давай", "пожалуйста", "плиз",
+    "поиграть", "играть", "игру", "игра", "игры", "ка", "ну", "вот",
+    "что", "нибудь", "чонить", "чтонибудь", "please", "open", "launch",
+    "start", "show", "find",
+}
+
 
 class AssistantApp:
     def __init__(self, config_root: Path, state_root: Path) -> None:
@@ -93,6 +102,7 @@ class AssistantApp:
     def _handle_chat_with_model_actions(self, text: str, route_hint: dict[str, Any], time_context: dict[str, Any]) -> dict[str, Any]:
         shortcuts = self.shortcut_catalog.load()
         shortcut_candidates = self._rank_shortcut_candidates(text=text, shortcuts=shortcuts)
+        game_candidates = self._top_category_candidates(shortcuts=shortcuts, category="game", limit=6)
         memory_context = self._build_memory_context(text=text, time_context=time_context)
         action_context = {
             "time_context": time_context,
@@ -109,6 +119,14 @@ class AssistantApp:
                     "match_score": round(float(item.get("match_score", 0.0)), 3),
                 }
                 for item in shortcut_candidates
+            ],
+            "game_candidates": [
+                {
+                    "id": item.get("id"),
+                    "display_name": item.get("display_name"),
+                    "source": item.get("source"),
+                }
+                for item in game_candidates
             ],
             "desktop_aliases": sorted(self.config["devices"].get("desktop_aliases", {}).keys()),
             "registered_commands": sorted(self.config["devices"].get("registered_commands", {}).keys()),
@@ -147,14 +165,30 @@ class AssistantApp:
             )
             if forced_command is not None:
                 commands = [forced_command]
+        if self._needs_forced_desktop_command(route_hint=route_hint, text=text, commands=commands):
+            forced_command = self.llm.force_desktop_command(
+                user_text=text,
+                action_context=action_context,
+                system_prompt=f"{self.persona.system_prompt}\n\n{self.persona.memory_context_system_prompt}",
+            )
+            if forced_command is not None:
+                commands = [forced_command]
         commands = self._sanitize_model_commands(text=text, commands=commands, route_hint=route_hint)
         executed: list[dict[str, Any]] = []
         for command in commands:
             executed.append(self._execute_model_command(command))
 
-        reply = model_result.get("reply", "Готово.")
+        reply = str(model_result.get("reply", "")).strip()
         successful = [item for item in executed if item.get("ok")]
         failed = [item for item in executed if not item.get("ok")]
+        suggested_shortcuts = self._build_suggested_shortcuts(
+            route_hint=route_hint,
+            shortcut_candidates=shortcut_candidates,
+            game_candidates=game_candidates,
+            commands=commands,
+            successful=successful,
+            failed=failed,
+        )
         wants_action = str(route_hint.get("intent", "")).startswith("desktop.")
         if wants_action and not commands:
             recovery = self.llm.recover_after_execution_error(
@@ -169,11 +203,28 @@ class AssistantApp:
                 "message": recovery,
                 "llm_message": model_result.get("reply", ""),
                 "executed_commands": [],
+                "suggested_shortcuts": suggested_shortcuts,
                 "channels": self.response_policy.channels(),
             }
 
+        if self._should_use_meta_clarification(text=text, memory_context=memory_context) and not commands:
+            reply = "В прошлой реплике ассистент не выполнил действие и ответил слишком пусто. Скажи ещё раз, что именно открыть или показать."
+        elif self._is_unhelpful_reply(reply) and not commands:
+            reply = self.llm.compose_context_reply(
+                user_text=text,
+                context=self._build_context_reply_payload(
+                    route_hint=route_hint,
+                    action_context=action_context,
+                    memory_context=memory_context,
+                ),
+                system_prompt=f"{self.persona.system_prompt}\n\n{self.persona.memory_context_system_prompt}",
+                context_reply_system_prompt=self.persona.context_reply_system_prompt,
+            ).strip()
         if successful:
-            reply = f"{reply} Выполнено действий: {len(successful)}."
+            if not reply:
+                reply = self._default_success_reply(successful)
+            else:
+                reply = f"{reply} Выполнено действий: {len(successful)}."
         info_results = [item for item in successful if str(item.get("action", "")).startswith("info.")]
         if info_results:
             reply = self._format_info_results(info_results) or self.llm.compose_tool_reply(
@@ -192,11 +243,14 @@ class AssistantApp:
             )
             reply = recovery
 
+        if not reply:
+            reply = "Уточни, что именно тебе показать или открыть."
         return {
             "ok": len(failed) == 0,
             "message": reply,
             "llm_message": model_result.get("reply", ""),
             "executed_commands": executed,
+            "suggested_shortcuts": suggested_shortcuts,
             "channels": self.response_policy.channels(),
         }
 
@@ -332,7 +386,13 @@ class AssistantApp:
         if not ranked:
             return None
         best = ranked[0]
-        if float(best.get("match_score", 0.0)) < 0.72:
+        best_score = float(best.get("match_score", 0.0))
+        second_score = float(ranked[1].get("match_score", 0.0)) if len(ranked) > 1 else 0.0
+        query_tokens = [token for token in self._normalize_tokens(text) if len(token) >= 3]
+        dynamic_floor = 0.72
+        if len(query_tokens) <= 3:
+            dynamic_floor = 0.42
+        if best_score < dynamic_floor and not (best_score >= 0.38 and (best_score - second_score) >= 0.18):
             return None
         return best
 
@@ -342,16 +402,26 @@ class AssistantApp:
         for token in raw_tokens:
             if len(token) < 2:
                 continue
+            if token in QUERY_STOPWORDS:
+                continue
             tokens.append(token)
             transliterated = self._transliterate_token(token)
             if transliterated != token:
                 tokens.append(transliterated)
+            phonetic = self._phonetic_token(token)
+            if phonetic not in {token, transliterated}:
+                tokens.append(phonetic)
             stem = self._stem_token(token)
             if stem != token:
+                if stem in QUERY_STOPWORDS:
+                    continue
                 tokens.append(stem)
                 transliterated_stem = self._transliterate_token(stem)
                 if transliterated_stem != stem:
                     tokens.append(transliterated_stem)
+                phonetic_stem = self._phonetic_token(stem)
+                if phonetic_stem not in {stem, transliterated_stem}:
+                    tokens.append(phonetic_stem)
         return list(dict.fromkeys(tokens))
 
     def _stem_token(self, token: str) -> str:
@@ -398,6 +468,31 @@ class AssistantApp:
             return token
         return "".join(mapping.get(char, char) for char in token.lower())
 
+    def _phonetic_token(self, token: str) -> str:
+        value = self._transliterate_token(token.lower())
+        replacements = (
+            ("sch", "sh"),
+            ("kh", "h"),
+            ("yo", "e"),
+            ("ye", "e"),
+            ("yu", "u"),
+            ("ya", "a"),
+            ("iy", "i"),
+            ("yi", "i"),
+            ("ay", "i"),
+            ("ai", "i"),
+            ("ey", "i"),
+            ("ei", "i"),
+            ("ck", "k"),
+            ("ph", "f"),
+            ("w", "v"),
+        )
+        for source, target in replacements:
+            value = value.replace(source, target)
+        value = re.sub(r"(.)\1+", r"\1", value)
+        value = re.sub(r"[aeiouy]+", "a", value)
+        return value.strip()
+
     def _required_info_action(self, route_hint: dict[str, Any]) -> str | None:
         intent = str(route_hint.get("intent", "")).strip().lower()
         if intent == "info.weather":
@@ -405,6 +500,87 @@ class AssistantApp:
         if intent == "info.news":
             return "info.get_news"
         return None
+
+    def _needs_forced_desktop_command(self, route_hint: dict[str, Any], text: str, commands: list[dict[str, Any]]) -> bool:
+        if commands:
+            return False
+        intent = str(route_hint.get("intent", "")).strip().lower()
+        if intent == "desktop.request":
+            return True
+        lowered = text.lower()
+        return any(token in lowered for token in ("открой", "открыть", "запусти", "запустить", "включи", "включить"))
+
+    def _is_unhelpful_reply(self, reply: str) -> bool:
+        normalized = reply.strip().lower()
+        if not normalized:
+            return True
+        return normalized in {
+            "готово.",
+            "готово",
+            "ок.",
+            "ок",
+            "сделано.",
+            "сделано",
+        } or normalized.startswith("не смог надежно спланировать действие")
+
+    def _default_success_reply(self, successful: list[dict[str, Any]]) -> str:
+        if not successful:
+            return "Сделал."
+        action = str(successful[0].get("action", "")).strip().lower()
+        if action.startswith("desktop.open"):
+            return "Открыл."
+        if action.startswith("desktop.run"):
+            return "Запустил."
+        return "Сделал."
+
+    def _is_meta_clarification(self, text: str) -> bool:
+        lowered = text.lower()
+        return any(
+            token in lowered
+            for token in (
+                "что готово",
+                "чо готово",
+                "что сделал",
+                "чо сделал",
+                "что именно",
+                "агде",
+                "а где",
+            )
+        )
+
+    def _should_use_meta_clarification(self, text: str, memory_context: dict[str, Any]) -> bool:
+        if not self._is_meta_clarification(text):
+            return False
+        dialogue = memory_context.get("recent_dialogue", [])
+        if not isinstance(dialogue, list):
+            return False
+        for item in reversed(dialogue):
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("role", "")).strip().lower() != "assistant":
+                continue
+            assistant_text = str(item.get("text", "")).strip()
+            return self._is_unhelpful_reply(assistant_text)
+        return False
+
+    def _build_context_reply_payload(
+        self,
+        route_hint: dict[str, Any],
+        action_context: dict[str, Any],
+        memory_context: dict[str, Any],
+    ) -> dict[str, Any]:
+        intent = str(route_hint.get("intent", "")).strip().lower()
+        payload: dict[str, Any] = {
+            "router_hint": route_hint,
+            "recent_dialogue": memory_context.get("recent_dialogue", []),
+            "user_profile": memory_context.get("user_profile", []),
+            "user_preferences": memory_context.get("user_preferences", []),
+        }
+        if intent == "entertainment.game":
+            payload["game_candidates"] = action_context.get("game_candidates", [])
+        elif intent.startswith("desktop."):
+            payload["shortcut_candidates"] = action_context.get("shortcut_candidates", [])
+        return payload
 
     def _sanitize_model_commands(
         self,
@@ -416,16 +592,56 @@ class AssistantApp:
             return []
         cleaned = [item for item in commands if isinstance(item, dict)]
         if len(cleaned) <= 1:
+            if str(route_hint.get("intent", "")).strip().lower() == "entertainment.game" and cleaned:
+                return []
             return cleaned
         intent = str(route_hint.get("intent", "")).strip().lower()
         if intent in {"info.weather", "info.news"}:
             return cleaned[:1]
+        if intent == "entertainment.game":
+            return []
         lowered = text.lower()
         multi_intent_markers = (" и ", " затем ", " потом ", " а еще ", " и ещё ", ",")
         explicitly_multiple = any(marker in lowered for marker in multi_intent_markers)
         if explicitly_multiple:
             return cleaned[:2]
         return []
+
+    def _top_category_candidates(self, shortcuts: list[dict[str, Any]], category: str, limit: int = 6) -> list[dict[str, Any]]:
+        filtered = [item for item in shortcuts if str(item.get("category", "")).strip().lower() == category]
+        filtered.sort(key=lambda item: (0 if str(item.get("source", "")).lower() == "taskbar" else 1, str(item.get("display_name", "")).lower()))
+        return filtered[:limit]
+
+    def _build_suggested_shortcuts(
+        self,
+        route_hint: dict[str, Any],
+        shortcut_candidates: list[dict[str, Any]],
+        game_candidates: list[dict[str, Any]],
+        commands: list[dict[str, Any]],
+        successful: list[dict[str, Any]],
+        failed: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        intent = str(route_hint.get("intent", "")).strip().lower()
+        if intent == "entertainment.game" and not successful:
+            return self._serialize_shortcut_suggestions(game_candidates, limit=5)
+        if failed and shortcut_candidates:
+            return self._serialize_shortcut_suggestions(shortcut_candidates, limit=5)
+        if intent.startswith("desktop.") and not commands and shortcut_candidates:
+            return self._serialize_shortcut_suggestions(shortcut_candidates, limit=5)
+        return []
+
+    def _serialize_shortcut_suggestions(self, shortcuts: list[dict[str, Any]], limit: int = 5) -> list[dict[str, Any]]:
+        suggestions: list[dict[str, Any]] = []
+        for item in shortcuts[:limit]:
+            suggestions.append(
+                {
+                    "id": str(item.get("id", "")).strip(),
+                    "display_name": str(item.get("display_name", "")).strip(),
+                    "category": str(item.get("category", "")).strip(),
+                    "source": str(item.get("source", "")).strip(),
+                }
+            )
+        return suggestions
 
     def _format_info_results(self, info_results: list[dict[str, Any]]) -> str:
         if not info_results:

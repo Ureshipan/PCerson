@@ -6,6 +6,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
+from audio.service import build_stt_service
 from config.loader import ConfigLoader
 from desktop.shortcut_discovery import WindowsShortcutDiscovery
 from hotkeys.windows_hotkey import WindowsHotkeyActivation
@@ -64,12 +65,21 @@ def run_hotkey_overlay(config_root: Path, state_root: Path) -> int:
 
     combo = hotkey_cfg.get("combo", "ctrl+alt+space")
     app = AssistantApp(config_root=config_root, state_root=state_root)
+    stt = build_stt_service(loaded["models"].get("stt", {}))
     activation = WindowsHotkeyActivation(combo=combo, enabled=True)
+
+    def status_supplier() -> dict[str, Any]:
+        snapshot = app.runtime_snapshot()
+        snapshot["stt"] = stt.healthcheck()
+        return snapshot
+
     overlay = HotkeyOverlayApp(
         title="PCerson",
         submit_handler=app.handle_text,
-        status_supplier=app.runtime_snapshot,
+        voice_input_handler=stt.transcribe_once,
+        status_supplier=status_supplier,
         hotkey_label=combo,
+        state_path=state_root / "runtime" / "overlay_state.json",
     )
 
     def hotkey_worker() -> None:

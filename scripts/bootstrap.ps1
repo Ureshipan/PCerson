@@ -12,6 +12,11 @@ $configUserDir = Join-Path $repoRoot "config\\user"
 $modelsUserPath = Join-Path $configUserDir "models.yaml"
 $devicesUserPath = Join-Path $configUserDir "devices.yaml"
 $providersUserPath = Join-Path $configUserDir "providers.yaml"
+$voskRuntimeDir = Join-Path $repoRoot "state\\runtime\\vosk"
+$voskModelsDir = Join-Path $voskRuntimeDir "models"
+$voskModelName = "vosk-model-small-ru-0.22"
+$voskModelPath = Join-Path $voskModelsDir $voskModelName
+$voskModelUrl = "https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip"
 $stateDirs = @("state", "state\\logs", "state\\cache", "state\\runtime", "state\\memory")
 
 function Select-Option {
@@ -103,6 +108,47 @@ function Remove-MojibakeAliasKeys {
   }
 }
 
+function Install-PythonPackages {
+  param(
+    [string[]]$Packages
+  )
+  if (-not $Packages -or $Packages.Count -eq 0) {
+    return
+  }
+  Write-Host ("Installing Python packages: {0}" -f ($Packages -join ", "))
+  python -m pip install --disable-pip-version-check @Packages | Out-Host
+  if ($LASTEXITCODE -ne 0) {
+    throw "pip install failed for packages: $($Packages -join ', ')"
+  }
+}
+
+function Ensure-VoskModel {
+  param(
+    [string]$ModelDir,
+    [string]$ModelName,
+    [string]$DownloadUrl
+  )
+  $targetPath = Join-Path $ModelDir $ModelName
+  if (Test-Path $targetPath) {
+    Write-Host "Vosk model already present: $ModelName"
+    return $targetPath
+  }
+  New-Item -ItemType Directory -Force -Path $ModelDir | Out-Null
+  $archivePath = Join-Path $ModelDir "$ModelName.zip"
+  Write-Host "Downloading Vosk model $ModelName ..."
+  Invoke-WebRequest -Uri $DownloadUrl -OutFile $archivePath
+  if (-not (Test-Path $archivePath)) {
+    throw "Vosk model download failed: $DownloadUrl"
+  }
+  Write-Host "Extracting Vosk model ..."
+  Expand-Archive -Path $archivePath -DestinationPath $ModelDir -Force
+  Remove-Item $archivePath -Force -ErrorAction SilentlyContinue
+  if (-not (Test-Path $targetPath)) {
+    throw "Extracted Vosk model folder not found: $targetPath"
+  }
+  return $targetPath
+}
+
 Push-Location $repoRoot
 try {
   Write-Host "Checking Python..."
@@ -130,18 +176,31 @@ try {
     @{ label = "mistral:7b"; value = "mistral:7b" }
   ) -DefaultIndex 1
 
+  $sttBackend = Select-Option -Title "Voice input:" -Options @(
+    @{ label = "Vosk Local (offline, recommended)"; value = "vosk_local" },
+    @{ label = "Windows Speech (system recognizers)"; value = "windows_speech" },
+    @{ label = "Disabled"; value = "none" }
+  ) -DefaultIndex 1
+
   $modelsCfg = Ensure-JsonConfig -Path $modelsUserPath -FallbackJson '{"llm":{},"stt":{"enabled":false,"backend":"none"},"vision":{"enabled":false,"backend":"none"}}'
   $existingBackend = ""
   $existingModel = ""
+  $existingSttBackend = ""
   if ($modelsCfg.llm) {
     $existingBackend = [string]$modelsCfg.llm.backend
     $existingModel = [string]$modelsCfg.llm.model
+  }
+  if ($modelsCfg.stt) {
+    $existingSttBackend = [string]$modelsCfg.stt.backend
   }
   if ($NonInteractive -and -not [string]::IsNullOrWhiteSpace($existingBackend)) {
     $backend = $existingBackend
   }
   if ($NonInteractive -and -not [string]::IsNullOrWhiteSpace($existingModel)) {
     $model = $existingModel
+  }
+  if ($NonInteractive -and -not [string]::IsNullOrWhiteSpace($existingSttBackend)) {
+    $sttBackend = $existingSttBackend
   }
 
   if (-not $modelsCfg.llm) {
@@ -150,6 +209,22 @@ try {
   $modelsCfg.llm.backend = $backend
   $modelsCfg.llm.model = $model
   $modelsCfg.llm.endpoint = "http://127.0.0.1:11434"
+  if (-not $modelsCfg.stt) {
+    $modelsCfg | Add-Member -NotePropertyName stt -NotePropertyValue (@{}) -Force
+  }
+  $modelsCfg.stt.enabled = ($sttBackend -ne "none")
+  $modelsCfg.stt.backend = $sttBackend
+  if ($sttBackend -eq "vosk_local") {
+    $modelsCfg.stt.language = "ru-RU"
+    $modelsCfg.stt.timeout_seconds = 8
+    $modelsCfg.stt.model_name = $voskModelName
+    $modelsCfg.stt.model_path = $voskModelPath
+    $modelsCfg.stt.download_url = $voskModelUrl
+  }
+  if ($sttBackend -eq "windows_speech") {
+    $modelsCfg.stt.language = "ru-RU"
+    $modelsCfg.stt.timeout_seconds = 8
+  }
   Save-JsonConfig -Path $modelsUserPath -Data $modelsCfg
 
   $devicesCfg = Ensure-JsonConfig -Path $devicesUserPath -FallbackJson '{"desktop_aliases":{},"registered_commands":{},"allowed_paths":[]}'
@@ -273,6 +348,12 @@ try {
         }
       }
     }
+  }
+
+  if ($sttBackend -eq "vosk_local") {
+    Install-PythonPackages -Packages @("vosk", "sounddevice")
+    [void](Ensure-VoskModel -ModelDir $voskModelsDir -ModelName $voskModelName -DownloadUrl $voskModelUrl)
+    Write-Host "Vosk STT ready."
   }
 
   Write-Host "Bootstrap complete."

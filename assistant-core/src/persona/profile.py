@@ -14,6 +14,7 @@ class PersonaProfile:
     memory_extraction_system_prompt: str
     memory_context_system_prompt: str
     tool_result_system_prompt: str
+    context_reply_system_prompt: str
 
     @classmethod
     def from_config(cls, payload: dict) -> "PersonaProfile":
@@ -27,4 +28,5 @@ class PersonaProfile:
             memory_extraction_system_prompt=payload.get("memory_extraction_system_prompt", ""),
             memory_context_system_prompt=payload.get("memory_context_system_prompt", ""),
             tool_result_system_prompt=payload.get("tool_result_system_prompt", ""),
+            context_reply_system_prompt=payload.get("context_reply_system_prompt", ""),
         )

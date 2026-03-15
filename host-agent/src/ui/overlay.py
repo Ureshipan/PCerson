@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 import queue
 import threading
 import tkinter as tk
 from tkinter import ttk
+from pathlib import Path
 from typing import Any, Callable
 
 
@@ -12,19 +14,28 @@ class HotkeyOverlayApp:
         self,
         title: str,
         submit_handler: Callable[[str], dict[str, Any]],
+        voice_input_handler: Callable[[], dict[str, Any]] | None = None,
         status_supplier: Callable[[], dict[str, Any]] | None = None,
         hotkey_label: str = "ctrl+alt+space",
+        state_path: Path | None = None,
     ) -> None:
         self.title = title
         self.submit_handler = submit_handler
+        self.voice_input_handler = voice_input_handler
         self.status_supplier = status_supplier
         self.hotkey_label = hotkey_label
+        self.state_path = state_path
         self.result_queue: queue.Queue[tuple[str, dict[str, Any]]] = queue.Queue()
+        self.voice_queue: queue.Queue[dict[str, Any]] = queue.Queue()
         self.status_queue: queue.Queue[dict[str, Any]] = queue.Queue()
         self.pending_prompt_index: str | None = None
         self.compact_mode = True
         self.drag_origin_x = 0
         self.drag_origin_y = 0
+        self.voice_capture_active = False
+        self._save_state_job: str | None = None
+        self._tooltip_window: tk.Toplevel | None = None
+        self.window_state = self._load_window_state()
 
         self.root = tk.Tk()
         self.root.withdraw()
@@ -48,6 +59,7 @@ class HotkeyOverlayApp:
         self.window.protocol("WM_DELETE_WINDOW", self.hide)
         self.window.bind("<Escape>", lambda _event: self.hide())
         self.window.bind("<Control-l>", lambda _event: self._clear_transcript())
+        self.window.bind("<Configure>", self._on_window_configure)
 
         style = ttk.Style()
         style.theme_use("clam")
@@ -117,11 +129,26 @@ class HotkeyOverlayApp:
         self.controls_bar.pack(side="right", padx=(0, 10))
         ttk.Button(self.controls_bar, text="Focus", command=self.toggle_compact_mode, style="Ghost.TButton").pack(side="left")
 
+        self.hint_chip = tk.Label(
+            header,
+            text="Shortcuts",
+            bg="#1E3046",
+            fg="#D8E7F6",
+            padx=10,
+            pady=8,
+            font=("Bahnschrift", 10, "bold"),
+        )
+        self.hint_chip.pack(side="right", padx=(0, 10))
+        self.hint_chip.bind("<Enter>", self._show_shortcuts_tooltip)
+        self.hint_chip.bind("<Leave>", self._hide_shortcuts_tooltip)
+        self._bind_drag(self.hint_chip)
+
         chips = tk.Frame(shell, bg="#0A0F16")
         chips.grid(row=1, column=0, sticky="ew", pady=(14, 12))
         self.llm_chip = self._make_chip(chips, "LLM", "checking", "#193329", "#C8F7D2")
         self.memory_chip = self._make_chip(chips, "Memory", "checking", "#2B213A", "#E6D9FF")
         self.shortcuts_chip = self._make_chip(chips, "Shortcuts", "0", "#1B2736", "#D8E7F6")
+        self.voice_chip = self._make_chip(chips, "Voice", "off", "#1B2736", "#D8E7F6")
         self.mode_chip = self._make_chip(chips, "Mode", "overlay", "#3A2417", "#FFD8C7")
         self.chips = chips
 
@@ -175,7 +202,11 @@ class HotkeyOverlayApp:
         self.transcript.bind("<Key>", self._block_transcript_edit)
         self.transcript.bind("<Control-c>", self._copy_transcript_selection)
         self.transcript.bind("<Control-a>", self._select_all_transcript)
+        self.transcript.bind("<Button-3>", self._show_transcript_menu)
         self.transcript.pack(fill="both", expand=True, padx=2, pady=(0, 2))
+        self.transcript_menu = tk.Menu(self.window, tearoff=0)
+        self.transcript_menu.add_command(label="Copy", command=self._copy_transcript_selection_command)
+        self.transcript_menu.add_command(label="Select All", command=self._select_all_transcript_command)
 
         side = tk.Frame(content, bg="#0A0F16", width=248)
         side.grid(row=0, column=1, sticky="ns")
@@ -227,8 +258,22 @@ class HotkeyOverlayApp:
                 style="Ghost.TButton",
             ).pack(fill="x", padx=10, pady=(0, 8))
 
+        self.suggestion_card = tk.Frame(shell, bg="#101823", highlightthickness=1, highlightbackground="#1E2C3B")
+        self.suggestion_card.grid(row=3, column=0, sticky="ew", pady=(0, 12))
+        tk.Label(
+            self.suggestion_card,
+            text="Подходящие ярлыки",
+            bg="#101823",
+            fg="#F3F7FB",
+            font=("Bahnschrift", 10, "bold"),
+        ).pack(anchor="w", padx=12, pady=(10, 8))
+        self.suggestion_buttons_row = tk.Frame(self.suggestion_card, bg="#101823")
+        self.suggestion_buttons_row.pack(fill="x", padx=10, pady=(0, 10))
+        self.suggestion_buttons: list[ttk.Button] = []
+        self.suggestion_card.grid_remove()
+
         composer = tk.Frame(shell, bg="#0A0F16", height=116)
-        composer.grid(row=3, column=0, sticky="ew", pady=(12, 0))
+        composer.grid(row=4, column=0, sticky="ew", pady=(0, 0))
         composer.grid_columnconfigure(0, weight=1)
         input_card = tk.Frame(composer, bg="#101823", highlightthickness=1, highlightbackground="#1E2C3B")
         input_card.grid(row=0, column=0, sticky="ew")
@@ -269,10 +314,15 @@ class HotkeyOverlayApp:
         self.entry.pack(fill="x", expand=True, ipady=10)
         self.entry.bind("<Return>", self._on_submit)
 
-        self._append_line("assistant", "Готов. Нажми хоткей и напиши сообщение.")
+        greeting = "Готов. Нажми хоткей и напиши сообщение."
+        if self.voice_input_handler is not None:
+            greeting += " Ctrl+4 — диктовка."
+        self._append_line("assistant", greeting)
         self.window.after(120, self._poll_results)
+        self.window.after(140, self._poll_voice_results)
         self.window.after(160, self._poll_status)
         self.window.after(300, self._schedule_status_refresh)
+        self.compact_mode = bool(self.window_state.get("compact_mode", True))
         self._apply_compact_mode()
 
     def run(self) -> int:
@@ -283,15 +333,13 @@ class HotkeyOverlayApp:
         self.window.deiconify()
         self.window.lift()
         self.window.focus_force()
-        if self.compact_mode:
-            self._center_window(width=760, height=420)
-        else:
-            self._center_window(width=980, height=680)
+        self._apply_saved_geometry()
         self.window.minsize(560, 320)
         self.entry.focus_set()
         self._schedule_status_refresh()
 
     def hide(self) -> None:
+        self._save_window_state()
         self.window.withdraw()
 
     def toggle(self) -> None:
@@ -336,6 +384,7 @@ class HotkeyOverlayApp:
                 break
             self._replace_last_assistant_line(result.get("message", "No response"))
             self._update_actions(result)
+            self._update_suggestions(result)
             self.status_line.configure(text="ready", fg="#76D7C4")
         self.window.after(120, self._poll_results)
 
@@ -359,6 +408,28 @@ class HotkeyOverlayApp:
         except Exception as exc:  # pragma: no cover
             snapshot = {"llm": {"ok": False, "error": str(exc)}, "semantic_memory": {"ok": False}, "shortcut_catalog_entries": 0}
         self.status_queue.put(snapshot)
+
+    def _poll_voice_results(self) -> None:
+        while True:
+            try:
+                result = self.voice_queue.get_nowait()
+            except queue.Empty:
+                break
+            self.voice_capture_active = False
+            if result.get("ok") and str(result.get("text", "")).strip():
+                text = str(result.get("text", "")).strip()
+                current = self.input_var.get().strip()
+                combined = f"{current} {text}".strip() if current else text
+                self.input_var.set(combined)
+                self.entry.focus_set()
+                self.entry.icursor("end")
+                self.status_line.configure(text="dictation ready", fg="#76D7C4")
+                self._append_line("system", f"voice> {text}")
+                continue
+            message = str(result.get("message", "Не удалось распознать речь")).strip() or "Не удалось распознать речь"
+            self.status_line.configure(text="voice idle", fg="#F7B267")
+            self._append_line("system", f"voice> {message}")
+        self.window.after(140, self._poll_voice_results)
 
     def _append_line(self, speaker: str, text: str) -> str:
         start_index = self.transcript.index("end-1c")
@@ -428,6 +499,16 @@ class HotkeyOverlayApp:
         )
         shortcuts = snapshot.get("shortcut_catalog_entries", 0)
         self.shortcuts_chip.configure(text=f"Shortcuts  {shortcuts}")
+        stt = snapshot.get("stt", {})
+        stt_ok = bool(stt.get("ok", False)) if isinstance(stt, dict) else False
+        stt_backend = stt.get("backend", "voice") if isinstance(stt, dict) else "voice"
+        if isinstance(stt, dict) and stt.get("implicit"):
+            stt_backend = f"{stt_backend}*"
+        self.voice_chip.configure(
+            text=f"Voice  {stt_backend}",
+            bg="#193329" if stt_ok else "#4A1F23",
+            fg="#C8F7D2" if stt_ok else "#FFD6DB",
+        )
 
     def _update_actions(self, result: dict[str, Any]) -> None:
         executed = result.get("executed_commands", [])
@@ -448,14 +529,71 @@ class HotkeyOverlayApp:
                 line += f" | {message}"
             self.action_list.insert("end", line)
 
+    def _update_suggestions(self, result: dict[str, Any]) -> None:
+        suggestions = result.get("suggested_shortcuts", [])
+        if not isinstance(suggestions, list) or not suggestions:
+            self._clear_suggestion_buttons()
+            return
+        self._clear_suggestion_buttons(keep_visible=True)
+        for item in suggestions[:5]:
+            if not isinstance(item, dict):
+                continue
+            display_name = str(item.get("display_name", "")).strip()
+            if not display_name:
+                continue
+            button = ttk.Button(
+                self.suggestion_buttons_row,
+                text=display_name[:28],
+                command=lambda value=display_name: self._submit_prompt(f"открой {value}"),
+                style="Ghost.TButton",
+            )
+            button.pack(side="left", padx=(0, 8))
+            self.suggestion_buttons.append(button)
+        if self.suggestion_buttons:
+            self.suggestion_card.grid()
+        else:
+            self.suggestion_card.grid_remove()
+
+    def _clear_suggestion_buttons(self, keep_visible: bool = False) -> None:
+        for button in self.suggestion_buttons:
+            button.destroy()
+        self.suggestion_buttons.clear()
+        if not keep_visible:
+            self.suggestion_card.grid_remove()
+
     def _inject_prompt(self, prompt: str) -> None:
         self.input_var.set(prompt)
         self.entry.focus_set()
 
+    def _submit_prompt(self, prompt: str) -> None:
+        self.input_var.set(prompt)
+        self.entry.focus_set()
+        self._submit()
+
     def _clear_transcript(self) -> None:
         self.transcript.delete("1.0", "end")
         self.action_list.delete(0, "end")
+        self._clear_suggestion_buttons()
         self._append_line("assistant", "История очищена. Готов к следующему запросу.")
+
+    def _start_voice_capture(self) -> str:
+        if self.voice_input_handler is None:
+            self.status_line.configure(text="voice unavailable", fg="#F7B267")
+            self._append_line("system", "voice> Голосовой ввод недоступен.")
+            return "break"
+        if self.voice_capture_active:
+            return "break"
+        self.voice_capture_active = True
+        self.status_line.configure(text="listening...", fg="#F7B267")
+        threading.Thread(target=self._run_voice_capture, daemon=True).start()
+        return "break"
+
+    def _run_voice_capture(self) -> None:
+        try:
+            result = self.voice_input_handler()
+        except Exception as exc:  # pragma: no cover
+            result = {"ok": False, "message": str(exc)}
+        self.voice_queue.put(result)
 
     def toggle_compact_mode(self) -> None:
         self.compact_mode = not self.compact_mode
@@ -467,14 +605,17 @@ class HotkeyOverlayApp:
             self.side_panel.grid_remove()
             self.subtitle_label.pack_forget()
             self.mode_chip.configure(text="Mode  focus")
-            self.window.geometry(self._resized_geometry(760, 420))
+            if self.window.state() != "withdrawn":
+                self.window.geometry(self._resized_geometry(760, 420))
         else:
             self.chips.grid()
             self.side_panel.grid()
             if not self.subtitle_label.winfo_ismapped():
                 self.subtitle_label.pack(anchor="w", pady=(2, 0))
             self.mode_chip.configure(text="Mode  overlay")
-            self.window.geometry(self._resized_geometry(980, 680))
+            if self.window.state() != "withdrawn":
+                self.window.geometry(self._resized_geometry(980, 680))
+        self._queue_state_save()
 
     def _bind_drag(self, widget: tk.Misc) -> None:
         widget.bind("<ButtonPress-1>", self._start_drag)
@@ -525,6 +666,7 @@ class HotkeyOverlayApp:
         x = self.window.winfo_x()
         y = self.window.winfo_y()
         self.window.geometry(f"{width}x{height}+{x}+{y}")
+        self._queue_state_save()
         return "break"
 
     def _resized_geometry(self, width: int, height: int) -> str:
@@ -540,12 +682,109 @@ class HotkeyOverlayApp:
     def _handle_control_keypress(self, event: tk.Event[tk.Misc]) -> str | None:
         keycode = int(getattr(event, "keycode", 0) or 0)
         key = (getattr(event, "keysym", "") or "").lower()
-        if keycode == 81 or key in {"q", "й"}:
+        if keycode in {49, 97} or key == "1":
             return self._hide_shortcut(event)
-        if keycode == 68 or key in {"d", "в"}:
+        if keycode in {50, 98} or key == "2":
             return self._toggle_focus_shortcut(event)
-        if (keycode == 67 or key in {"c", "с"}) and event.widget is self.transcript:
-            return self._copy_transcript_selection(event)
-        if (keycode == 65 or key in {"a", "ф"}) and event.widget is self.transcript:
-            return self._select_all_transcript(event)
+        if keycode in {51, 99} or key == "3":
+            self._clear_transcript()
+            return "break"
+        if keycode in {52, 100} or key == "4":
+            return self._start_voice_capture()
         return None
+
+    def _show_transcript_menu(self, event: tk.Event[tk.Misc]) -> str:
+        try:
+            self.transcript_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self.transcript_menu.grab_release()
+        return "break"
+
+    def _copy_transcript_selection_command(self) -> None:
+        self._copy_transcript_selection(None)
+
+    def _select_all_transcript_command(self) -> None:
+        self._select_all_transcript(None)
+
+    def _show_shortcuts_tooltip(self, event: tk.Event[tk.Misc]) -> None:
+        if self._tooltip_window is not None:
+            return
+        tooltip = tk.Toplevel(self.window)
+        tooltip.overrideredirect(True)
+        tooltip.attributes("-topmost", True)
+        tooltip.configure(bg="#1A2430")
+        label = tk.Label(
+            tooltip,
+            text=(
+                "Ctrl+1  hide window\n"
+                "Ctrl+2  focus/overlay\n"
+                "Ctrl+3  clear chat\n"
+                "Ctrl+4  dictate into input field\n"
+                "Ctrl+Arrows  resize window\n"
+                "Right click on transcript  copy/select all\n"
+                "Esc  hide window"
+            ),
+            justify="left",
+            bg="#1A2430",
+            fg="#EAF1F7",
+            padx=12,
+            pady=10,
+            font=("Bahnschrift", 10),
+        )
+        label.pack()
+        tooltip.geometry(f"+{event.x_root + 8}+{event.y_root + 18}")
+        self._tooltip_window = tooltip
+
+    def _hide_shortcuts_tooltip(self, _event: tk.Event[tk.Misc] | None = None) -> None:
+        if self._tooltip_window is None:
+            return
+        self._tooltip_window.destroy()
+        self._tooltip_window = None
+
+    def _on_window_configure(self, _event: tk.Event[tk.Misc]) -> None:
+        if self.window.state() == "withdrawn":
+            return
+        self._queue_state_save()
+
+    def _queue_state_save(self) -> None:
+        if self.state_path is None:
+            return
+        if self._save_state_job is not None:
+            self.window.after_cancel(self._save_state_job)
+        self._save_state_job = self.window.after(180, self._save_window_state)
+
+    def _save_window_state(self) -> None:
+        if self.state_path is None:
+            return
+        self._save_state_job = None
+        self.state_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "compact_mode": self.compact_mode,
+            "width": int(self.window.winfo_width()),
+            "height": int(self.window.winfo_height()),
+            "x": int(self.window.winfo_x()),
+            "y": int(self.window.winfo_y()),
+        }
+        self.state_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        self.window_state = payload
+
+    def _load_window_state(self) -> dict[str, Any]:
+        if self.state_path is None or not self.state_path.exists():
+            return {}
+        try:
+            raw = json.loads(self.state_path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+        if not isinstance(raw, dict):
+            return {}
+        return raw
+
+    def _apply_saved_geometry(self) -> None:
+        width = int(self.window_state.get("width", 760 if self.compact_mode else 980))
+        height = int(self.window_state.get("height", 420 if self.compact_mode else 680))
+        x = self.window_state.get("x")
+        y = self.window_state.get("y")
+        if isinstance(x, int) and isinstance(y, int):
+            self.window.geometry(f"{width}x{height}+{x}+{y}")
+        else:
+            self._center_window(width=width, height=height)

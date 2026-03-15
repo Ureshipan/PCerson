@@ -13,8 +13,14 @@ class CommandRouter:
 
         if lowered in {"status", "health", "diag"}:
             return {"intent": "status", "payload": {}}
+        if any(token in lowered for token in ("не открыл", "не запустил", "не включил")):
+            return {"intent": "desktop.request", "payload": {"text": command}}
+        if any(token in lowered for token in ("открой", "открыть", "запусти", "запустить", "включи", "включить", "open", "launch", "start")):
+            return {"intent": "desktop.request", "payload": {"text": command}}
         if any(token in lowered for token in ("погод", "weather", "температур", "дожд", "снег")):
             return {"intent": "info.weather", "payload": {"text": command}}
         if any(token in lowered for token in ("новост", "news", "сводк", "дайджест", "заголов")):
             return {"intent": "info.news", "payload": {"text": command}}
+        if any(token in lowered for token in ("поиг", "играть", "игру", "игры", "game", "gaming")):
+            return {"intent": "entertainment.game", "payload": {"text": command}}
         return {"intent": "chat.fallback", "payload": {"text": command}}

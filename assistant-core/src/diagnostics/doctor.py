@@ -10,6 +10,11 @@ from integrations.shortcut_catalog import ShortcutCatalog
 from integrations.vector_memory import VectorMemoryStore
 from memory.service import MemoryService
 
+try:
+    from audio.service import build_stt_service
+except ModuleNotFoundError:  # pragma: no cover
+    build_stt_service = None
+
 
 def _read_runtime_state(path: Path) -> dict:
     if not path.exists():
@@ -70,11 +75,18 @@ def run_doctor(config_root: Path, state_root: Path) -> dict:
     repo_root = config_root.parent
     if config["models"].get("llm", {}).get("backend") == "ollama":
         runtime_state.update(_detect_ollama_processor(repo_root))
+    stt_info = config["models"].get("stt", {})
+    if build_stt_service is not None:
+        try:
+            stt_info = build_stt_service(config["models"].get("stt", {})).healthcheck()
+        except Exception:
+            stt_info = config["models"].get("stt", {})
     return {
         "config_files": list(config.keys()),
         "memory_entries": len(memory.recent(limit=100)),
         "platform": config["assistant"].get("platform"),
         "llm": LLMClient(config["models"]).healthcheck(),
+        "stt": stt_info,
         "semantic_memory": semantic_memory.healthcheck(),
         "model_runtime_state": runtime_state,
         "activation": {

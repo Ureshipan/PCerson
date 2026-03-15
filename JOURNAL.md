@@ -43,3 +43,10 @@
 2026-03-11: Improved desktop action reliability: enriched shortcut catalog with search metadata, ranked shortcut candidates more semantically, normalized model targets into known shortcuts, and added fallback launch paths for broken `.lnk` execution.
 2026-03-11: Added info tools for weather and news with model-driven planning, external data fetch, and second-pass response synthesis from tool results.
 2026-03-11: Reworked hotkey overlay into a richer runtime UI with status chips, action panel, quick prompts, multi-line composer, and live assistant snapshot wiring.
+2026-03-14: Added overlay state persistence, numeric shortcut hints, transcript context menu, and focus-first window restore behavior.
+2026-03-14: Added shortcut categories and game candidates so vague play requests can be clarified against discovered game shortcuts instead of random launches.
+2026-03-14: Extended Windows shortcut discovery to parse `.url` desktop/taskbar shortcuts, fixing Steam-style desktop entries like `HELLDIVERS 2` and `Lucid Blocks`.
+2026-03-14: Added overlay shortcut suggestion chips so vague or failed action flows can surface candidate apps directly in the UI and resend them through the model pipeline.
+2026-03-14: Removed the implicit planner fallback reply `Готово.`, added explicit `desktop.request` route hints, forced desktop replan via LLM for open/start requests, and a separate context-reply pass for empty command responses.
+2026-03-14: Added push-to-talk overlay scaffolding via local Windows STT (`Ctrl+4`), voice status in overlay snapshot/doctor, and bootstrap config for voice input selection.
+2026-03-14: Replaced Windows-dependent voice path with autonomous `vosk_local` backend, bootstrap installation of `vosk + sounddevice`, automatic local model download, and runtime healthcheck through overlay/doctor.

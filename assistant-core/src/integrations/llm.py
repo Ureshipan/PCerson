@@ -81,7 +81,7 @@ class LLMClient:
             if raw.strip() and not raw.lstrip().startswith("{"):
                 fallback_reply = raw.strip()
             return {"reply": fallback_reply, "commands": []}
-        reply = str(parsed.get("reply", "")).strip() or "Готово."
+        reply = str(parsed.get("reply", "")).strip()
         commands = parsed.get("commands", [])
         if not isinstance(commands, list):
             commands = []
@@ -175,6 +175,27 @@ class LLMClient:
             num_predict=220,
         )
 
+    def compose_context_reply(
+        self,
+        user_text: str,
+        context: dict[str, Any],
+        system_prompt: str,
+        context_reply_system_prompt: str,
+    ) -> str:
+        if self.backend == "mock":
+            return "Уточни, что именно тебе показать или открыть."
+        if self.backend != "ollama":
+            return "Уточни, что именно тебе показать или открыть."
+        prompt = (
+            f"Запрос пользователя: {user_text}\n"
+            f"Контекст: {json.dumps(context, ensure_ascii=False)}\n"
+        )
+        return self._generate_ollama(
+            prompt=prompt,
+            system_prompt=f"{system_prompt}\n\n{context_reply_system_prompt}",
+            num_predict=180,
+        )
+
     def force_tool_command(
         self,
         user_text: str,
@@ -209,6 +230,42 @@ class LLMClient:
         action = str(parsed.get("action", "")).strip()
         payload = parsed.get("payload", {})
         if action != required_action or not isinstance(payload, dict):
+            return None
+        return {"action": action, "payload": payload}
+
+    def force_desktop_command(
+        self,
+        user_text: str,
+        action_context: dict[str, Any],
+        system_prompt: str,
+    ) -> dict[str, Any] | None:
+        if self.backend != "ollama":
+            return None
+        prompt = (
+            f"Запрос пользователя: {user_text}\n"
+            f"Контекст desktop actions: {json.dumps(action_context, ensure_ascii=False)}\n"
+            "Нужно вернуть ровно одну JSON-команду desktop-действия. "
+            "Если есть сильный shortcut candidate, предпочти desktop.open_shortcut. "
+            "Если безопасного действия нет, верни JSON вида {\"action\":\"\",\"payload\":{}}.\n"
+            "Верни только JSON."
+        )
+        raw = self._generate_ollama(
+            prompt=prompt,
+            system_prompt=(
+                f"{system_prompt}\n\n"
+                "Ты обязан вернуть одну desktop command JSON-структуру без обычного текста."
+            ),
+            json_mode=True,
+            num_predict=140,
+        )
+        parsed = self._extract_json_object(raw)
+        if not parsed:
+            return None
+        action = str(parsed.get("action", "")).strip()
+        payload = parsed.get("payload", {})
+        if not action or not isinstance(payload, dict):
+            return None
+        if not action.startswith("desktop."):
             return None
         return {"action": action, "payload": payload}
 
